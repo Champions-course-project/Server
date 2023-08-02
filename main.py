@@ -5,10 +5,20 @@
 import sys
 import os
 
-working_dir = '/home/lamoshin/Programming/Server'
+working_dir = '.'
 os.chdir(working_dir)
 
 # GLOBAL_FILE = open("log.log", "a", encoding="UTF-8")
+if sys.platform == "win32":
+    pass
+elif sys.platform == "linux":
+    pass
+else:
+    raise TypeError("""
+    Current platform is unsupported.
+    Supported platforms are Windows and Linux.
+    Consider contacting main developer to add implementation.
+    """)
 
 
 def answer_for_request():
