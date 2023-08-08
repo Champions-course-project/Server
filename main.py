@@ -70,6 +70,17 @@ def answer_for_request():
     # GLOBAL_FILE.write("Preparing for responce...\n")
     # if this request came from application
     if request_type == "POST":
+        if request_address == "/table":
+            # TODO: проверка авторизации
+            authorized = True
+            if authorized:
+                # TODO: посмотреть тип запроса и выполнить действия в соответствии с ним
+                pass
+            else:
+                # TODO: вернуть 303
+                pass
+            # TODO: ВСЕГДА указывай Content-Length после приема POST
+            answer_additional_headers.append("Content-Length: ")
         pass
 
     # if this is a usual request
