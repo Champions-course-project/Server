@@ -36,7 +36,7 @@ def answer_for_request():
         exit()
 
     main_line = str(request_headers[0]).replace(
-        "\n", "").replace("\r\n", "").split(' ')
+        "\r\n", "").replace("\n", "").split(' ')
 
     # with open("file.txt", "a", encoding="UTF-8") as RQ:
     #     for line in request_headers:
@@ -81,7 +81,9 @@ def answer_for_request():
                 pass
             # TODO: ВСЕГДА указывай Content-Length после приема POST
             answer_additional_headers.append("Content-Length: ")
-        pass
+        else:
+            # TODO: если запрос не на table, вернуть 303 с указанием на тот же адрес -> 404
+            pass
 
     # if this is a usual request
     else:
