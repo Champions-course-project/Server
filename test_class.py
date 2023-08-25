@@ -13,7 +13,7 @@ import argparse
 working_dir = '.'
 os.chdir(working_dir)
 
-logging.basicConfig(filename='server-log.log', filemode='a',
+logging.basicConfig(filename='server-log.log', filemode='a', encoding='utf-8',
                     level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
 
 if sys.platform == "win32":
@@ -293,8 +293,9 @@ def save_to_file(statuses_input: dict):
         file_statuses = {}
     # структура словаря: словарь[faculty_name][course_name][
     # group_name][date_choose][student_choose]: status
-    for faculty in statuses_input:
-        courses_dict = statuses_input[faculty]
+    faculty_dict = statuses_input['args']
+    for faculty in faculty_dict:
+        courses_dict = faculty_dict[faculty]
         for course in courses_dict:
             groups_dict = courses_dict[course]
             for group in groups_dict:
