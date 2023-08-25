@@ -92,58 +92,57 @@ class RequestAnalyzer:
 
         self.__reader = __reader
         request_headers = list[str]()
+        # first pass to read incoming data
         async for line in self.__reader():
             if line != None:
                 request_headers.append(line)
-            # while len(request_headers) < 2 or (request_headers[-1] != '\r\n' and request_headers[-1] != '\n' and request_headers[-1] != ''):
-            #     line = await self.__reader()
-            #     request_headers.append(line)
         self.random_uuid = random.randbytes(16).hex(':', 2)
         logging.info(f"New request: UUID = {self.random_uuid}")
         if len(request_headers) == 0 or (len(request_headers) >= 3 and request_headers[-3] == ''):
             logging.info(
                 f"{self.random_uuid} Request unfinished. Terminating session")
             self.request_finished = False
-        else:
+            return
+        try:
+            main_line = str(request_headers[0]).replace(
+                "\r\n", "").replace("\n", "").split(' ')
+            self.request_type = main_line[0]
+            self.request_address = main_line[1]
             try:
-                main_line = str(request_headers[0]).replace(
-                    "\r\n", "").replace("\n", "").split(' ')
-                self.request_type = main_line[0]
-                self.request_address = main_line[1]
-                try:
-                    self.request_http_ver = main_line[2]
-                except:
-                    self.request_http_ver = 'HTTP/0.9'
+                self.request_http_ver = main_line[2]
             except:
-                logging.info(
-                    f"{self.random_uuid} Incorrect first line. Terminating session")
-                self.request_correct = False
-            if self.request_correct:
-                data_len = len(request_headers)
-                if len(request_headers) > 1 and request_headers[-2] == '':
-                    data_len -= 2
-                self.request_headers = {request_headers[i].split(
-                    ": ")[0]: request_headers[i].split(": ")[1] for i in range(1, data_len)}
+                self.request_http_ver = 'HTTP/0.9'
+        except:
+            logging.info(
+                f"{self.random_uuid} Incorrect first line. Terminating session")
+            self.request_correct = False
+            return
 
-                async for line in self.__reader():
-                    if line != None:
-                        request_headers.append(line)
-                if len(request_headers) > 1 and request_headers[-2] == '':
-                    try:
-                        self.request_body = json.loads(request_headers[-1])
-                    except:
-                        pass
+        data_len = len(request_headers)
+        if len(request_headers) > 1 and request_headers[-2] == '':
+            data_len -= 2
+        self.request_headers = {request_headers[i].split(
+            ": ")[0]: request_headers[i].split(": ")[1] for i in range(1, data_len)}
+        # second pass to read incoming data
+        async for line in self.__reader():
+            if line != None:
+                request_headers.append(line)
+        if len(request_headers) > 1 and request_headers[-2] == '':
+            try:
+                self.request_body = json.loads(request_headers[-1])
+            except:
+                pass
 
-                logging.info(
-                    f"{self.random_uuid} Type: {self.request_type}")
-                logging.info(
-                    f"{self.random_uuid} Address: {self.request_address}")
-                logging.info(
-                    f"{self.random_uuid} HTTP version: {self.request_http_ver}")
-                logging.info(
-                    f"{self.random_uuid} Headers: {self.request_headers}")
-                logging.info(
-                    f"{self.random_uuid} Request body: {self.request_body}")
+        logging.info(
+            f"{self.random_uuid} Type: {self.request_type}")
+        logging.info(
+            f"{self.random_uuid} Address: {self.request_address}")
+        logging.info(
+            f"{self.random_uuid} HTTP version: {self.request_http_ver}")
+        logging.info(
+            f"{self.random_uuid} Headers: {self.request_headers}")
+        logging.info(
+            f"{self.random_uuid} Request body: {self.request_body}")
         return
 
     pass
@@ -191,7 +190,7 @@ class ResponseCreator:
 
         full_responce += b'\n'
         logging.info(
-            f"{self.__responce_uuid} Sending responce: {full_responce}")
+            f"{self.__responce_uuid} Sending responce: {'\n'.join(full_structure)}")
         self.__writer.write(full_responce)
         await self.__writer.drain()
         self.__writer.close()
