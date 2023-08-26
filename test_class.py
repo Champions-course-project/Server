@@ -46,9 +46,8 @@ class RequestAnalyzer:
     request_type = ''
     request_address = ''
     request_http_ver = ''
-    request_body_raw = ''
     request_body = {}
-    random_uuid = ''
+    connection_UUID = ''
     __reader = None
     __StreamReader = None
     request_finished = True
@@ -56,14 +55,6 @@ class RequestAnalyzer:
 
     def __init__(self, reader: asyncio.StreamReader):
         self.__StreamReader = reader
-        return
-
-    async def _async_init(self):
-        """
-        Анализирует поступившие заголовки. \n
-        НЕ СОСТАВЛЯЕТ ОТВЕТ! \n
-        Служит только для их удобного разбиения и дальнейшей работы извне.
-        """
 
         async def __reader():
             error_cnt = 0
@@ -91,18 +82,31 @@ class RequestAnalyzer:
                     data_list = data_list[1:]
 
         self.__reader = __reader
+
+        self.connection_UUID = random.randbytes(16).hex(':', 2)
+        logging.info(f"New connection: UUID = {self.connection_UUID}")
+
+        return
+
+    async def read_request(self):
+        """
+        Анализирует поступившие заголовки. \n
+        НЕ СОСТАВЛЯЕТ ОТВЕТ! \n
+        Служит только для их удобного разбиения и дальнейшей работы извне.
+        """
+        request_UUID = self.connection_UUID + \
+            '::' + random.randbytes(4).hex(':', 2)
+        logging.info(f"New request: UUID = {request_UUID}")
         request_headers = list[str]()
         # first pass to read incoming data
         async for line in self.__reader():
             if line != None:
                 request_headers.append(line)
-        self.random_uuid = random.randbytes(16).hex(':', 2)
-        logging.info(f"New request: UUID = {self.random_uuid}")
         if len(request_headers) == 0 or (len(request_headers) >= 3 and request_headers[-3] == ''):
             logging.info(
-                f"{self.random_uuid} Request unfinished. Terminating session")
+                f"{request_UUID} Request unfinished. Terminating session")
             self.request_finished = False
-            return
+            return request_UUID
         try:
             main_line = str(request_headers[0]).replace(
                 "\r\n", "").replace("\n", "").split(' ')
@@ -114,9 +118,9 @@ class RequestAnalyzer:
                 self.request_http_ver = 'HTTP/0.9'
         except:
             logging.info(
-                f"{self.random_uuid} Incorrect first line. Terminating session")
+                f"{request_UUID} Incorrect first line. Terminating session")
             self.request_correct = False
-            return
+            return request_UUID
 
         data_len = len(request_headers)
         if len(request_headers) > 1 and request_headers[-2] == '':
@@ -134,16 +138,16 @@ class RequestAnalyzer:
                 pass
 
         logging.info(
-            f"{self.random_uuid} Type: {self.request_type}")
+            f"{request_UUID} Type: {self.request_type}")
         logging.info(
-            f"{self.random_uuid} Address: {self.request_address}")
+            f"{request_UUID} Address: {self.request_address}")
         logging.info(
-            f"{self.random_uuid} HTTP version: {self.request_http_ver}")
+            f"{request_UUID} HTTP version: {self.request_http_ver}")
         logging.info(
-            f"{self.random_uuid} Headers: {self.request_headers}")
+            f"{request_UUID} Headers: {self.request_headers}")
         logging.info(
-            f"{self.random_uuid} Request body: {self.request_body}")
-        return
+            f"{request_UUID} Request body: {self.request_body}")
+        return request_UUID
 
     pass
 
@@ -152,12 +156,18 @@ class ResponseCreator:
     __responce_protocol = ''
     __responce_code = 400
     __responce_name = ''
-    __responce_headers = list[str]()
-    __responce_body = []
+    __responce_headers = {}
+    __responce_body = {}
     __responce_uuid = ''
     __writer = None
+    __default_headers = {
+        "server": "denied"
+    }
+    __additional_headers = {
+        "connection": 'close'
+    }
 
-    def __init__(self, writer: asyncio.StreamWriter, responce_uuid: str, responce_protocol: str, responce_code: int | str, responce_name: str, responce_headers: list[str], responce_body: dict = {}):
+    def __init__(self, writer: asyncio.StreamWriter, responce_uuid: str, responce_protocol: str, responce_code: int | str, responce_name: str, responce_headers: list[str] | dict[str, str] = {}, responce_body: dict | list | str = ''):
         self.__responce_uuid = responce_uuid
         self.__responce_protocol = responce_protocol
         self.__responce_code = responce_code
@@ -168,29 +178,65 @@ class ResponseCreator:
         return
 
     async def _async_send(self):
+        # preparing responce
         full_structure = []
+        # first line
         full_structure.append(
             f"{self.__responce_protocol} {self.__responce_code} {self.__responce_name}")
+
+        # preparing responce body for the header line
         if type(self.__responce_body) in (list, dict):
             try:
                 responce_body_str = json.dumps(
                     self.__responce_body, ensure_ascii=False, sort_keys=False)
             except:
-                responce_body_str = ''
+                responce_body_str = self.__responce_body
         else:
             responce_body_str = self.__responce_body
-        content_length = len(responce_body_str)
-        for header in self.__responce_headers:
-            if header.split(":")[0].lower() == "content-length":
-                full_structure.append(f"Content-Length: {content_length}")
+        content_length = len(responce_body_str.encode())
+
+        # convert headers to dict
+        if type(self.__responce_headers) == list:
+            responce_headers = {header.split(': ')[0].lower(): header.split(': ')[
+                1].lower() for header in self.__responce_headers}
+        else:
+            responce_headers = {header.lower(): self.__responce_headers[header].lower(
+            ) for header in self.__responce_headers}
+
+        # add default headers: these headers should be in every responce and their values are strict
+        for header in self.__default_headers:
+            full_structure.append(
+                f"{header}: {self.__default_headers[header]}")
+        full_structure.append(f"content-length: {content_length}")
+
+        # add suggested headers: these values are not strict and can vary
+        for header in responce_headers:
+            if header not in self.__default_headers and header != 'content-length':
+                full_structure.append(f"{header}: {responce_headers[header]}")
+
+        # add additional headers: these headers should be in responce, but also can vary: if they were missing, using default values
+        for header in self.__additional_headers:
+            if header not in responce_headers:
+                full_structure.append(
+                    f"{header}: {self.__additional_headers[header]}")
+
+        # empty line after headers
         full_structure.append('')
+
+        # if content-length is not 0 or TODO: put, head and other methods which do not require body:
+        # add body to the responce
         if content_length != 0:
             full_structure.append(responce_body_str)
-        full_responce = ('\n'.join(full_structure)).encode()
 
+        # convert to the string
+        text_full_responce = '\n'.join(full_structure)
+
+        full_responce = text_full_responce.encode()
+        # LF for correct reading
         full_responce += b'\n'
+
         logging.info(
-            f"{self.__responce_uuid} Sending responce: {'\n'.join(full_structure)}")
+            f"{self.__responce_uuid} Sending responce: \n{text_full_responce}")
         self.__writer.write(full_responce)
         await self.__writer.drain()
         self.__writer.close()
@@ -205,37 +251,30 @@ def get_from_file(requests_dict: dict):
     """
     with open("data.json", "r", encoding="UTF-8") as IF:
         data = (dict)(json.load(IF))
-    logging.debug("Opening a file.")
     ERR = {"error": True}
     requested_info = requests_dict["request"]
     given_args = requests_dict["args"]
     output_dict = {}
     try:
         if 'faculty' == requested_info:
-            logging.debug("Request for faculty. Success.")
             output_dict = {'error': False, 'data': (list)(data.keys())}
 
         elif 'course' == requested_info:
             if "faculty" in given_args:
-                logging.debug("Request for course. Success.")
                 output_dict = {'error': False, 'data': (
                     list)(data[given_args["faculty"]].keys())}
             else:
                 output_dict = ERR
-                logging.debug("Request for course. Failure.")
 
         elif 'group' == requested_info:
             if "faculty" in given_args and "course" in given_args:
-                logging.debug("Request for group. Success.")
                 output_dict = {'error': False, 'data': (list)(
                     data[given_args["faculty"]][given_args["course"]])}
             else:
                 output_dict = ERR
-                logging.debug("Request for group. Failure.")
 
         elif 'students' == requested_info:
             if "faculty" in given_args and "course" in given_args and "group" in given_args:
-                logging.debug("Request for students. Success.")
                 with open("students_list.json", "r", encoding="UTF-8") as IF:
                     students_data = (dict)(json.load(IF))
                 try:
@@ -246,11 +285,9 @@ def get_from_file(requests_dict: dict):
                 output_dict = {'error': False, 'data': students_list}
             else:
                 output_dict = ERR
-                logging.debug("Request for students. Failure.")
 
         elif 'dates' == requested_info:
             if "faculty" in given_args and "course" in given_args and "group" in given_args:
-                logging.debug("Request for dates. Success.")
                 dates_list = []
                 with open("Dates.txt", "r", encoding="UTF-8") as IF:
                     for line in IF:
@@ -258,11 +295,9 @@ def get_from_file(requests_dict: dict):
                 output_dict = {'error': False, 'data': dates_list}
             else:
                 output_dict = ERR
-                logging.debug("Request for dates. Failure.")
 
         elif 'statuses' == requested_info:
             if "faculty" in given_args and "course" in given_args and "group" in given_args:
-                logging.debug("Request for statuses. Success.")
                 with open("statuses.json", "r", encoding="UTF-8") as IF:
                     statuses = (dict)(json.load(IF))
                 try:
@@ -272,7 +307,6 @@ def get_from_file(requests_dict: dict):
                     output_dict = {'error': False, 'data': {}}
             else:
                 output_dict = ERR
-                logging.debug("Request for statuses. Failure.")
 
     except Exception as exc:
         output_dict = ERR
@@ -335,20 +369,18 @@ def save_to_file(statuses_input: dict):
 
 async def async_main(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     # get request
+    ERR = {'error': 1}
     incoming_request = RequestAnalyzer(reader)
-    await incoming_request._async_init()
+    request_uuid = await incoming_request.read_request()
     # request recieved, now working with it
     if incoming_request.request_finished:
-        uuid = incoming_request.random_uuid
         request_body = incoming_request.request_body
         # TODO: check if request is for table or not
         request_correct = incoming_request.request_correct
         if len(request_body) == 2 and 'type' in request_body and 'data' in request_body and 'args' in request_body['data'] and (request_body['type'] == 'load' and 'request' in request_body['data'] or request_body['type'] == 'save'):
             if request_body['type'] == 'load':
-                logging.debug("Type: load, loading now...")
                 responce_body = get_from_file(request_body['data'])
             elif request_body['type'] == 'save':
-                logging.debug("Type: save, saving now...")
                 save_to_file(request_body['data'])
                 responce_body = {'error': 0}
             else:
@@ -356,10 +388,10 @@ async def async_main(reader: asyncio.StreamReader, writer: asyncio.StreamWriter)
         else:
             request_correct = False
         if not request_correct:
-            responce_body['error'] = 1
+            responce_body = ERR
         # sending responce
         responce = ResponseCreator(
-            writer, uuid, 'HTTP/1.1', 200, 'OK', ["server: myself", "connection: close"], responce_body)
+            writer, request_uuid, 'HTTP/1.1', 200, 'OK', responce_body=responce_body)
         await responce._async_send()
 
 
