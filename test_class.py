@@ -48,6 +48,7 @@ class RequestAnalyzer:
     request_http_ver = ''
     request_body = {}
     connection_UUID = ''
+    __http_0_9 = False
     __reader = None
     __StreamReader = None
     request_finished = True
@@ -56,6 +57,8 @@ class RequestAnalyzer:
     def __init__(self, reader: asyncio.StreamReader):
         self.__StreamReader = reader
 
+        # TODO: imagine if client is too slow, that it sends a header each second
+        # this reader simply will disconnect due to very slow connection
         async def __reader():
             error_cnt = 0
             data_list = list[str]()
@@ -102,31 +105,31 @@ class RequestAnalyzer:
         async for line in self.__reader():
             if line != None:
                 request_headers.append(line)
+                if len(request_headers) == 1 and len(line.split(' ')) == 2 and line.split(' ')[0] == 'GET':
+                    self.__http_0_9 = True
+                    break
+        if self.__http_0_9:
+            return
         if len(request_headers) == 0 or (len(request_headers) >= 3 and request_headers[-3] == ''):
             logging.info(
                 f"{request_UUID} Request unfinished. Terminating session")
             self.request_finished = False
             return request_UUID
         try:
-            main_line = str(request_headers[0]).replace(
-                "\r\n", "").replace("\n", "").split(' ')
+            main_line = request_headers[0].split(' ')
             self.request_type = main_line[0]
             self.request_address = main_line[1]
             try:
                 self.request_http_ver = main_line[2]
             except:
-                self.request_http_ver = 'HTTP/0.9'
+                assert main_line[0] == 'GET'
+            assert len(main_line) == 3
         except:
             logging.info(
                 f"{request_UUID} Incorrect first line. Terminating session")
             self.request_correct = False
             return request_UUID
 
-        data_len = len(request_headers)
-        if len(request_headers) > 1 and request_headers[-2] == '':
-            data_len -= 2
-        self.request_headers = {request_headers[i].split(
-            ": ")[0]: request_headers[i].split(": ")[1] for i in range(1, data_len)}
         # second pass to read incoming data
         async for line in self.__reader():
             if line != None:
@@ -134,8 +137,11 @@ class RequestAnalyzer:
         if len(request_headers) > 1 and request_headers[-2] == '':
             try:
                 self.request_body = json.loads(request_headers[-1])
+                request_headers = request_headers[:-2]
             except:
                 pass
+        self.request_headers = {request_headers[i].split(
+            ": ")[0]: request_headers[i].split(": ")[1] for i in range(1, len(request_headers))}
 
         logging.info(
             f"{request_UUID} Type: {self.request_type}")
@@ -242,6 +248,15 @@ class ResponseCreator:
         self.__writer.close()
         return
 
+    pass
+
+
+class Responce_0_9:
+    """
+    Специальный класс для ответа на запросы протокола HTTP/0.9.\n
+    Ответ состоит исключительно из страницы "Протокол не поддерживается",
+    так как для успешной работы с журналом требуется наличие метода POST (появился в HTTP/1.0)
+    """
     pass
 
 
@@ -367,36 +382,71 @@ def save_to_file(statuses_input: dict):
     return 200
 
 
-async def async_main(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    # get request
+async def request_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     ERR = {'error': 1}
+    SUPPORTED_METHODS = ('GET', 'POST', 'OPTIONS', 'HEAD')
+    # get request
     incoming_request = RequestAnalyzer(reader)
     request_uuid = await incoming_request.read_request()
-    # request recieved, now working with it
-    if incoming_request.request_finished:
-        request_body = incoming_request.request_body
-        # TODO: check if request is for table or not
-        request_correct = incoming_request.request_correct
-        if len(request_body) == 2 and 'type' in request_body and 'data' in request_body and 'args' in request_body['data'] and (request_body['type'] == 'load' and 'request' in request_body['data'] or request_body['type'] == 'save'):
-            if request_body['type'] == 'load':
-                responce_body = get_from_file(request_body['data'])
-            elif request_body['type'] == 'save':
-                save_to_file(request_body['data'])
-                responce_body = {'error': 0}
-            else:
-                request_correct = False
+    # request recieved, now working with it:
+    # 1. If request wasn't finished in the first place:
+    if not incoming_request.request_finished:
+        return
+
+    # 2. If request was finished, but wasn't correct (e.g. first line incorrect or missing important headers)
+    if not incoming_request.request_correct:
+        # TODO: HTTP 400 'Bad Request' and default page
+        pass
+
+    # 3. If request is HTTP/0.9 for some stupid reason:
+    if incoming_request.__http_0_9:
+        pass
+
+    # finally, nothing holds me from reading all of the data
+    request_address = incoming_request.request_address
+    request_http_ver = incoming_request.request_http_ver
+    request_type = incoming_request.request_type
+    request_body = incoming_request.request_body
+    request_headers = incoming_request.request_headers
+    request_correct = incoming_request.request_correct
+
+    # check request type
+    if request_type in ('GET', 'HEAD'):
+        # do usual stuff
+        if request_type == 'HEAD':
+            # stop here, we need only headers
+            pass
         else:
-            request_correct = False
-        if not request_correct:
-            responce_body = ERR
-        # sending responce
-        responce = ResponseCreator(
-            writer, request_uuid, 'HTTP/1.1', 200, 'OK', responce_body=responce_body)
-        await responce._async_send()
+            # continue here, we also require a body
+            pass
+    elif request_type == 'POST':
+        pass
+    elif request_type == 'OPTIONS':
+        pass
+    else:
+        pass
+    table_request_correct = True
+    # TODO: check if request is for table or not
+    if len(request_body) == 2 and 'type' in request_body and 'data' in request_body and 'args' in request_body['data'] and (request_body['type'] == 'load' and 'request' in request_body['data'] or request_body['type'] == 'save'):
+        if request_body['type'] == 'load':
+            responce_body = get_from_file(request_body['data'])
+        elif request_body['type'] == 'save':
+            save_to_file(request_body['data'])
+            responce_body = {'error': 0}
+        else:
+            table_request_correct = False
+    else:
+        table_request_correct = False
+    if not table_request_correct:
+        responce_body = ERR
+    # sending responce
+    responce = ResponseCreator(
+        writer, request_uuid, 'HTTP/1.1', 200, 'OK', responce_body=responce_body)
+    await responce._async_send()
 
 
 async def start_service(host: str, port: int):
-    service = await asyncio.start_server(async_main, host, port)
+    service = await asyncio.start_server(request_handler, host, port)
     await service.serve_forever()
 
 
