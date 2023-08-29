@@ -48,7 +48,7 @@ class RequestAnalyzer:
     request_http_ver = ''
     request_body = {}
     connection_UUID = ''
-    __http_0_9 = False
+    http_0_9 = False
     __reader = None
     __StreamReader = None
     request_finished = True
@@ -106,9 +106,9 @@ class RequestAnalyzer:
             if line != None:
                 request_headers.append(line)
                 if len(request_headers) == 1 and len(line.split(' ')) == 2 and line.split(' ')[0] == 'GET':
-                    self.__http_0_9 = True
+                    self.http_0_9 = True
                     break
-        if self.__http_0_9:
+        if self.http_0_9:
             return
         if len(request_headers) == 0 or (len(request_headers) >= 3 and request_headers[-3] == ''):
             logging.info(
@@ -140,8 +140,14 @@ class RequestAnalyzer:
                 request_headers = request_headers[:-2]
             except:
                 pass
+        len_decr = 0
+        for item in request_headers[::-1]:
+            if item == '':
+                len_decr += 1
+            else:
+                break
         self.request_headers = {request_headers[i].split(
-            ": ")[0]: request_headers[i].split(": ")[1] for i in range(1, len(request_headers))}
+            ": ")[0]: request_headers[i].split(": ")[1] for i in range(1, len(request_headers) - len_decr)}
 
         logging.info(
             f"{request_UUID} Type: {self.request_type}")
@@ -399,7 +405,7 @@ async def request_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWr
         pass
 
     # 3. If request is HTTP/0.9 for some stupid reason:
-    if incoming_request.__http_0_9:
+    if incoming_request.http_0_9:
         pass
 
     # finally, nothing holds me from reading all of the data
