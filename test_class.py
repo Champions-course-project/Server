@@ -10,6 +10,12 @@ import json
 import asyncio
 import argparse
 
+ERR = {'error': 1}
+ALL_METHODS = ('GET', 'POST', 'OPTIONS', 'HEAD', 'PUT',
+               'PATCH', 'DELETE', 'TRACE', 'CONNECT')
+SUPPORTED_METHODS = ('GET', 'POST', 'OPTIONS', 'HEAD')
+BODY_METHODS = ('POST', 'PUT', 'PATCH')
+
 working_dir = '.'
 os.chdir(working_dir)
 
@@ -49,7 +55,9 @@ class RequestAnalyzer:
     request_body = {}
     connection_UUID = ''
     http_0_9 = False
-    __reader = None
+    __line_reader = None
+    __StreamReader_wipe = None
+    __read_n_bytes = None
     __StreamReader = None
     request_finished = True
     request_correct = True
@@ -57,34 +65,34 @@ class RequestAnalyzer:
     def __init__(self, reader: asyncio.StreamReader):
         self.__StreamReader = reader
 
-        # TODO: imagine if client is too slow, that it sends a header each second
-        # this reader simply will disconnect due to very slow connection
-        async def __reader():
-            error_cnt = 0
-            data_list = list[str]()
+        async def __lines_reader():
             while True:
-                await asyncio.sleep(0.001)
-                data = await self.__StreamReader.read(len(self.__StreamReader._buffer))
+                data = await self.__StreamReader.readline()
                 if data == b'':
-                    if len(data_list) == 0:
-                        error_cnt += 1
-                        if error_cnt == 3:
-                            break
-                        else:
-                            yield None
-                    else:
-                        yield data_list[0]
-                        data_list = data_list[1:]
-                else:
-                    error_cnt = 0
-                    temp_data_list = data.decode().split("\r\n")
-                    for item in temp_data_list:
-                        for item2 in item.split('\n'):
-                            data_list.append(item2)
-                    yield data_list[0]
-                    data_list = data_list[1:]
+                    self.request_finished = False
+                    break
+                data = data.decode().replace('\r\n', '').replace('\n', '')
+                yield data
 
-        self.__reader = __reader
+        self.__line_reader = __lines_reader
+
+        async def __StreamReader_wipe():
+            await self.__StreamReader.read(len(self.__StreamReader._buffer))
+            return
+
+        self.__StreamReader_wipe = __StreamReader_wipe
+
+        async def __read_n_bytes(n: int):
+            data = b''
+            while len(data) < n:
+                partial_data = await self.__StreamReader.readline()
+                if partial_data == b'':
+                    self.request_finished = False
+                    return
+                data += partial_data
+            return data[:n].decode()
+
+        self.__read_n_bytes = __read_n_bytes
 
         self.connection_UUID = random.randbytes(16).hex(':', 2)
         logging.info(f"New connection: UUID = {self.connection_UUID}")
@@ -101,53 +109,68 @@ class RequestAnalyzer:
             '::' + random.randbytes(4).hex(':', 2)
         logging.info(f"New request: UUID = {request_UUID}")
         request_headers = list[str]()
-        # first pass to read incoming data
-        async for line in self.__reader():
-            if line != None:
-                request_headers.append(line)
-                if len(request_headers) == 1 and len(line.split(' ')) == 2 and line.split(' ')[0] == 'GET':
-                    self.http_0_9 = True
-                    break
-        if self.http_0_9:
-            return
-        if len(request_headers) == 0 or (len(request_headers) >= 3 and request_headers[-3] == ''):
+        # Step 1. Read all headers, first line included
+        async for line in self.__line_reader():
+            if line == '':
+                if len(request_headers) == 0:
+                    continue
+                break
+            request_headers.append(line)
+            if len(request_headers) == 1 and len(line.split(' ')) == 2 and line.split(' ')[0] == 'GET':
+                self.http_0_9 = True
+                logging.info(
+                    f"{request_UUID} HTTP version: HTTP/0.9")
+                logging.info(
+                    f"{request_UUID} Address: {line.split(' ')[1]}")
+                return request_UUID
+
+        # Step 2. Check if first part of request was finished in the first place (e.g. connection wasn't closed)
+        if not self.request_finished:
             logging.info(
                 f"{request_UUID} Request unfinished. Terminating session")
-            self.request_finished = False
             return request_UUID
+        # Step 3. Get first line of the request
         try:
             main_line = request_headers[0].split(' ')
             self.request_type = main_line[0]
             self.request_address = main_line[1]
-            try:
-                self.request_http_ver = main_line[2]
-            except:
-                assert main_line[0] == 'GET'
-            assert len(main_line) == 3
+            self.request_http_ver = main_line[2]
         except:
             logging.info(
                 f"{request_UUID} Incorrect first line. Terminating session")
             self.request_correct = False
             return request_UUID
-
-        # second pass to read incoming data
-        async for line in self.__reader():
-            if line != None:
-                request_headers.append(line)
-        if len(request_headers) > 1 and request_headers[-2] == '':
+        # Step 4. Separate headers. Invalid headers are ignored
+        for i in range(1, len(request_headers)):
             try:
-                self.request_body = json.loads(request_headers[-1])
-                request_headers = request_headers[:-2]
+                __request_splitted = request_headers[i].split(': ')
+                __header_name = __request_splitted[0].lower()
+                __header_value = __request_splitted[1]
+                for p in range(2, len(__request_splitted)):
+                    __header_value += __request_splitted[p]
+                self.request_headers[__header_name] = __header_value.lower()
             except:
                 pass
-        len_decr = 0
-        for item in request_headers[::-1]:
-            if item == '':
-                len_decr += 1
-            else:
-                break
-        self.request_headers = {request_headers[i].split(
-            ": ")[0]: request_headers[i].split(": ")[1] for i in range(1, len(request_headers) - len_decr)}
+
+        # Step 5. Check if we should contain request body. If yes, get it
+        if self.request_type in BODY_METHODS:
+            if 'content-length' in self.request_headers:
+                try:
+                    n = int(self.request_headers['content-length'])
+                    if n != 0:
+                        data = await self.__read_n_bytes(n)
+                        if not self.request_finished:
+                            logging.info(
+                                f"{request_UUID} Request terminated while body being requested. Terminating session")
+                            return request_UUID
+                        self.request_body = dict(json.loads(data))
+                except:
+                    logging.info(
+                        f"{request_UUID} Invalid content-length header or request body. Terminating session")
+                    self.request_correct = False
+                    return request_UUID
+        # Step 6. Wipe all remaining data in case of re-use of this connection
+        await self.__StreamReader_wipe()
 
         logging.info(
             f"{request_UUID} Type: {self.request_type}")
@@ -172,14 +195,14 @@ class ResponseCreator:
     __responce_body = {}
     __responce_uuid = ''
     __writer = None
-    __default_headers = {
+    __necessary_headers = {
         "server": "denied"
     }
     __additional_headers = {
         "connection": 'close'
     }
 
-    def __init__(self, writer: asyncio.StreamWriter, responce_uuid: str, responce_protocol: str, responce_code: int | str, responce_name: str, responce_headers: list[str] | dict[str, str] = {}, responce_body: dict | list | str = ''):
+    def __init__(self, writer: asyncio.StreamWriter, responce_uuid: str, responce_protocol: str, responce_code: int, responce_name: str, responce_headers: dict[str, str] = {}, responce_body:  str = ''):
         self.__responce_uuid = responce_uuid
         self.__responce_protocol = responce_protocol
         self.__responce_code = responce_code
@@ -192,11 +215,11 @@ class ResponseCreator:
     async def _async_send(self):
         # preparing responce
         full_structure = []
-        # first line
+        # Step 1. First line of responce
         full_structure.append(
             f"{self.__responce_protocol} {self.__responce_code} {self.__responce_name}")
 
-        # preparing responce body for the header line
+        # Step 2. Prepare responce body for the content-length header
         if type(self.__responce_body) in (list, dict):
             try:
                 responce_body_str = json.dumps(
@@ -207,7 +230,7 @@ class ResponseCreator:
             responce_body_str = self.__responce_body
         content_length = len(responce_body_str.encode())
 
-        # convert headers to dict
+        # Step 3. Convert incoming headers to a dict, if they are still in list form
         if type(self.__responce_headers) == list:
             responce_headers = {header.split(': ')[0].lower(): header.split(': ')[
                 1].lower() for header in self.__responce_headers}
@@ -215,40 +238,43 @@ class ResponseCreator:
             responce_headers = {header.lower(): self.__responce_headers[header].lower(
             ) for header in self.__responce_headers}
 
-        # add default headers: these headers should be in every responce and their values are strict
-        for header in self.__default_headers:
+        # Step 4. Add necessary headers: they should be in every responce and their values are strict
+        for header in self.__necessary_headers:
             full_structure.append(
-                f"{header}: {self.__default_headers[header]}")
+                f"{header}: {self.__necessary_headers[header]}")
         full_structure.append(f"content-length: {content_length}")
 
-        # add suggested headers: these values are not strict and can vary
+        # Step 5. Add responce headers
         for header in responce_headers:
-            if header not in self.__default_headers and header != 'content-length':
+            if header not in self.__necessary_headers and header != 'content-length':
                 full_structure.append(f"{header}: {responce_headers[header]}")
 
-        # add additional headers: these headers should be in responce, but also can vary: if they were missing, using default values
+        # Step 6. Add additional headers: these headers should be in responce, but also can vary: if they were missing, using default values
         for header in self.__additional_headers:
             if header not in responce_headers:
                 full_structure.append(
                     f"{header}: {self.__additional_headers[header]}")
 
-        # empty line after headers
+        # Step 7. Add empty line after headers
         full_structure.append('')
 
+        # Step 8.
         # if content-length is not 0 or TODO: put, head and other methods which do not require body:
         # add body to the responce
         if content_length != 0:
             full_structure.append(responce_body_str)
 
-        # convert to the string
+        # Step 9. Convert the list to the string
         text_full_responce = '\n'.join(full_structure)
 
+        # Step 10. Encode responce
         full_responce = text_full_responce.encode()
         # LF for correct reading
         full_responce += b'\n'
 
+        # Step 11. Send the responce
         logging.info(
-            f"{self.__responce_uuid} Sending responce: \n{text_full_responce}")
+            f"{self.__responce_uuid} Sending responce.")
         self.__writer.write(full_responce)
         await self.__writer.drain()
         self.__writer.close()
@@ -263,7 +289,24 @@ class Responce_0_9:
     Ответ состоит исключительно из страницы "Протокол не поддерживается",
     так как для успешной работы с журналом требуется наличие метода POST (появился в HTTP/1.0)
     """
-    pass
+    __html_code = ''
+    __responce_uuid = ''
+    __writer = None
+
+    def __init__(self, writer: asyncio.StreamWriter, responce_uuid: str):
+        with open("html_0_9.html", 'r', encoding='utf-8') as IF:
+            self.__html_code = IF.read()
+        self.__responce_uuid = responce_uuid
+        self.__writer = writer
+
+    async def _async_send(self):
+        logging.info(
+            f"{self.__responce_uuid} HTTP/0.9 Sending responce")
+        full_responce = self.__html_code.encode()
+        self.__writer.write(full_responce)
+        await self.__writer.drain()
+        self.__writer.close()
+        return
 
 
 def get_from_file(requests_dict: dict):
@@ -389,8 +432,6 @@ def save_to_file(statuses_input: dict):
 
 
 async def request_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    ERR = {'error': 1}
-    SUPPORTED_METHODS = ('GET', 'POST', 'OPTIONS', 'HEAD')
     # get request
     incoming_request = RequestAnalyzer(reader)
     request_uuid = await incoming_request.read_request()
@@ -406,7 +447,9 @@ async def request_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWr
 
     # 3. If request is HTTP/0.9 for some stupid reason:
     if incoming_request.http_0_9:
-        pass
+        responce = Responce_0_9(writer, request_uuid)
+        await responce._async_send()
+        return
 
     # finally, nothing holds me from reading all of the data
     request_address = incoming_request.request_address
@@ -458,7 +501,7 @@ async def start_service(host: str, port: int):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', default="localhost")
+    parser.add_argument('--host', default="127.0.0.1")
     parser.add_argument('--port', type=int, default=80)
 
     ConnectionInfoParsed = parser.parse_args()
