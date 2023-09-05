@@ -294,7 +294,7 @@ class Responce_0_9:
     __writer = None
 
     def __init__(self, writer: asyncio.StreamWriter, responce_uuid: str):
-        with open("html_0_9.html", 'r', encoding='utf-8') as IF:
+        with open("./secure/html_0_9.html", 'r', encoding='utf-8') as IF:
             self.__html_code = IF.read()
         self.__responce_uuid = responce_uuid
         self.__writer = writer
