@@ -44,7 +44,7 @@ class RequestAnalyzer:
         async def __read_n_bytes(n: int):
             data = b''
             while len(data) < n:
-                partial_data = await self.__StreamReader.readline()
+                partial_data = await self.__StreamReader.read(n - len(data))
                 if partial_data == b'':
                     self.request_finished = False
                     return
