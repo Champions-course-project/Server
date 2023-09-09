@@ -55,9 +55,9 @@ def get_from_file(requests_dict: dict):
 
         elif 'statuses' == requested_info:
             if "faculty" in given_args and "course" in given_args and "group" in given_args:
-                with open("statuses.json", "r", encoding="UTF-8") as IF:
-                    statuses = (dict)(json.load(IF))
                 try:
+                    with open("statuses.json", "r", encoding="UTF-8") as IF:
+                        statuses = (dict)(json.load(IF))
                     output_dict = {'error': False, 'data': (dict)(
                         statuses[given_args["faculty"]][given_args["course"]][given_args["group"]])}
                 except:
